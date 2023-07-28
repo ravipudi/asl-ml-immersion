@@ -73,7 +73,23 @@ def tune_hyperparameters(
 
     # TODO: launch the hyperparameter job using
     # aiplatform.HyperparameterTuningJob
-    hp_job = None
+    hp_job = aiplatform.HyperparameterTuningJob(
+        display_name="covertype_kfp_tuning_job",
+        custom_job=custom_job,
+        metric_spec={
+            "accuracy": "maximize",
+        },
+        parameter_spec={
+            "alpha": hpt.DoubleParameterSpec(
+                min=1.0e-4, max=1.0e-1, scale="linear"
+            ),
+            "max_iter": hpt.DiscreteParameterSpec(
+                values=[1, 2], scale="linear"
+            ),
+        },
+        max_trial_count=max_trial_count,
+        parallel_trial_count=parallel_trial_count,
+    )
 
     metrics = [
         trial.final_measurement.metrics[0].value for trial in hp_job.trials

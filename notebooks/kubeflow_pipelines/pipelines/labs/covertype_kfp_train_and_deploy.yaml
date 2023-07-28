@@ -1,0 +1,84 @@
+name: Train and deploy
+inputs:
+- {name: project, type: String}
+- {name: location, type: String}
+- {name: container_uri, type: String}
+- {name: serving_container_uri, type: String}
+- {name: training_file_path, type: String}
+- {name: validation_file_path, type: String}
+- {name: staging_bucket, type: String}
+- {name: alpha, type: Float}
+- {name: max_iter, type: Integer}
+implementation:
+  container:
+    image: python:3.8
+    command:
+    - sh
+    - -c
+    - |2
+
+      if ! [ -x "$(command -v pip)" ]; then
+          python3 -m ensurepip || python3 -m ensurepip --user || apt-get install python3-pip
+      fi
+
+      PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet     --no-warn-script-location 'google-cloud-aiplatform' 'kfp==1.8.16' && "$0" "$@"
+    - sh
+    - -ec
+    - |
+      program_path=$(mktemp -d)
+      printf "%s" "$0" > "$program_path/ephemeral_component.py"
+      python3 -m kfp.v2.components.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+    - |2+
+
+      import kfp
+      from kfp.v2 import dsl
+      from kfp.v2.dsl import *
+      from typing import *
+
+      def train_and_deploy(
+          project: str,
+          location: str,
+          container_uri: str,
+          serving_container_uri: str,
+          training_file_path: str,
+          validation_file_path: str,
+          staging_bucket: str,
+          alpha: float,
+          max_iter: int,
+      ):
+
+          # pylint: disable-next=import-outside-toplevel
+          from google.cloud import aiplatform
+
+          aiplatform.init(
+              project=project, location=location, staging_bucket=staging_bucket
+          )
+
+          # TODO: Launch the training using aiplatform.CustomContainerTrainingJob
+          job = aiplatform.CustomContainerTrainingJob(
+              display_name="covertype_kfp_training",
+              container_uri=container_uri,
+              command=[
+                  "python",
+                  "train.py",
+                  f"--training_dataset_path={training_file_path}",
+                  f"--validation_dataset_path={validation_file_path}",
+                  f"--alpha={alpha}",
+                  f"--max_iter={max_iter}",
+                  "--nohptune",
+              ],
+              staging_bucket=staging_bucket,
+              model_serving_container_image_uri=serving_container_uri,
+          )
+
+          model = job.run(replica_count=1, model_display_name="covertype_kfp_model")
+          endpoint = model.deploy(  # pylint: disable=unused-variable
+              traffic_split={"0": 100},
+              machine_type="n1-standard-2",
+          )
+
+    args:
+    - --executor_input
+    - {executorInput: null}
+    - --function_to_execute
+    - train_and_deploy

@@ -11,9 +11,47 @@
 # BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either
 # express or implied. See the License for the specific language governing
 # permissions and limitations under the License.
+
+from kfp.v2.dsl import Artifact, Input, component
+
+
+@component(
+    base_image="gcr.io/ml-pipeline/google-cloud-pipeline-components:0.2.1",
+    output_component_file="bq_export.yaml",
+)
+def extract_bq_op(bq_table: Input[Artifact], destination_uri: str):
+
+    from google.cloud import bigquery
+
+    client = bigquery.Client(bq_table.metadata["projectId"])
+
+    dataset_ref = bigquery.DatasetReference(
+        bq_table.metadata["projectId"], bq_table.metadata["datasetId"]
+    )
+    table_ref = dataset_ref.table(bq_table.metadata["tableId"])
+
+    extract_job = client.extract_table(
+        table_ref,
+        destination_uri,
+        # Location must match that of the source table.
+        location="US",
+    )  # API request
+    extract_job.result()  # Waits for job to complete.
+
+    print(
+        "Exported {}:{}.{} to {}".format(
+            bq_table.metadata["projectId"],
+            bq_table.metadata["datasetId"],
+            bq_table.metadata["tableId"],
+            destination_uri,
+        )
+    )
+
+
 """Kubeflow Covertype Pipeline."""
 import os
 
+from google.cloud import bigquery
 from google.cloud.aiplatform import hyperparameter_tuning as hpt
 from google_cloud_pipeline_components.aiplatform import (
     EndpointCreateOp,
@@ -22,6 +60,9 @@ from google_cloud_pipeline_components.aiplatform import (
 )
 from google_cloud_pipeline_components.experimental import (
     hyperparameter_tuning_job,
+)
+from google_cloud_pipeline_components.experimental.bigquery import (
+    BigqueryQueryJobOp,
 )
 from google_cloud_pipeline_components.experimental.custom_job import (
     CustomTrainingJobOp,
@@ -49,11 +90,40 @@ MODEL_DISPLAY_NAME = os.getenv("MODEL_DISPLAY_NAME", PIPELINE_NAME)
 
 
 @dsl.pipeline(
-    name=f"{PIPELINE_NAME}-kfp-pipeline",
+    name=f"{PIPELINE_NAME}-kfp-pipeline-full",
     description="Kubeflow pipeline that tunes, trains, and deploys on Vertex",
     pipeline_root=PIPELINE_ROOT,
 )
 def create_pipeline():
+    def construct_query(_mode, _split):
+        query = f"CREATE OR REPLACE TABLE `{PROJECT_ID}.covertype_dataset.{_mode}`\
+        AS (SELECT * \
+        FROM `covertype_dataset.covertype` AS cover \
+        WHERE \
+        MOD(ABS(FARM_FINGERPRINT(TO_JSON_STRING(cover))), 10) IN {_split})"
+        return query
+
+    bq_train_split_task = BigqueryQueryJobOp(
+        project=PROJECT_ID,
+        location="US",
+        query=construct_query("training", "(1, 2, 3, 4)"),
+    )
+
+    bq_valid_split_task = BigqueryQueryJobOp(
+        project=PROJECT_ID,
+        location="US",
+        query=construct_query("validation", "(8)"),
+    )
+
+    train_extract = extract_bq_op(
+        bq_table=bq_train_split_task.outputs["destination_table"],
+        destination_uri=TRAINING_FILE_PATH,
+    )
+
+    valid_extract = extract_bq_op(
+        bq_table=bq_valid_split_task.outputs["destination_table"],
+        destination_uri=VALIDATION_FILE_PATH,
+    )
 
     worker_pool_specs = [
         {
@@ -99,7 +169,7 @@ def create_pipeline():
         max_trial_count=MAX_TRIAL_COUNT,
         parallel_trial_count=PARALLEL_TRIAL_COUNT,
         base_output_directory=PIPELINE_ROOT,
-    )
+    ).after(train_extract, valid_extract)
 
     trials_task = hyperparameter_tuning_job.GetTrialsOp(
         gcp_resources=hp_tuning_task.outputs["gcp_resources"]

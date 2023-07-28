@@ -1,8 +1,7 @@
 # Copyright 2021 Google LLC
 
-# Licensed under the Apache License, Version 2.0 (the "License"); you may not
-# use this file except in compliance with the License. You may obtain a copy of
-# the License at
+# Licensed under the Apache License, Version 2.0 (the "License"); you may not use this
+# file except in compliance with the License. You may obtain a copy of the License at
 
 # https://www.apache.org/licenses/LICENSE-2.0
 
@@ -12,7 +11,6 @@
 # express or implied. See the License for the specific language governing
 # permissions and limitations under the License.
 """Kubeflow Covertype Pipeline."""
-# pylint: disable=unused-import,unused-argument,unused-variable
 import os
 
 from kfp import dsl
@@ -51,11 +49,32 @@ def covertype_train(
 ):
     staging_bucket = f"{pipeline_root}/staging"
 
-    tuning_op = None  # TODO
+    tuning_op = tune_hyperparameters(
+        project=PROJECT_ID,
+        location=REGION,
+        container_uri=training_container_uri,
+        training_file_path=training_file_path,
+        validation_file_path=validation_file_path,
+        staging_bucket=staging_bucket,
+        max_trial_count=max_trial_count,
+        parallel_trial_count=parallel_trial_count,
+    )
 
     accuracy = tuning_op.outputs["best_accuracy"]
 
     with dsl.Condition(
         accuracy >= accuracy_deployment_threshold, name="deploy_decision"
     ):
-        train_and_deploy_op = None  # TODO
+        train_and_deploy_op = (  # pylint: disable=unused-variable
+            train_and_deploy(
+                project=PROJECT_ID,
+                location=REGION,
+                container_uri=training_container_uri,
+                serving_container_uri=serving_container_uri,
+                training_file_path=training_file_path,
+                validation_file_path=validation_file_path,
+                staging_bucket=staging_bucket,
+                alpha=tuning_op.outputs["best_alpha"],
+                max_iter=tuning_op.outputs["best_max_iter"],
+            )
+        )

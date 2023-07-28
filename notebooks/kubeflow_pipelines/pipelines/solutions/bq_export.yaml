@@ -1,0 +1,63 @@
+name: Extract bq op
+inputs:
+- {name: bq_table, type: Artifact}
+- {name: destination_uri, type: String}
+implementation:
+  container:
+    image: gcr.io/ml-pipeline/google-cloud-pipeline-components:0.2.1
+    command:
+    - sh
+    - -c
+    - |2
+
+      if ! [ -x "$(command -v pip)" ]; then
+          python3 -m ensurepip || python3 -m ensurepip --user || apt-get install python3-pip
+      fi
+
+      PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet     --no-warn-script-location 'kfp==1.8.16' && "$0" "$@"
+    - sh
+    - -ec
+    - |
+      program_path=$(mktemp -d)
+      printf "%s" "$0" > "$program_path/ephemeral_component.py"
+      python3 -m kfp.v2.components.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+    - |2+
+
+      import kfp
+      from kfp.v2 import dsl
+      from kfp.v2.dsl import *
+      from typing import *
+
+      def extract_bq_op(
+          bq_table: Input[Artifact],
+          destination_uri: str
+      ):
+
+          from google.cloud import bigquery
+          client = bigquery.Client(bq_table.metadata["projectId"])
+
+          dataset_ref = bigquery.DatasetReference(bq_table.metadata["projectId"], bq_table.metadata["datasetId"])
+          table_ref = dataset_ref.table(bq_table.metadata["tableId"])
+
+          extract_job = client.extract_table(
+              table_ref,
+              destination_uri,
+              # Location must match that of the source table.
+              location="US",
+          )  # API request
+          extract_job.result()  # Waits for job to complete.
+
+          print(
+              "Exported {}:{}.{} to {}".format(
+                  bq_table.metadata["projectId"],
+                  bq_table.metadata["datasetId"],
+                  bq_table.metadata["tableId"],
+                  destination_uri
+              )
+          )
+
+    args:
+    - --executor_input
+    - {executorInput: null}
+    - --function_to_execute
+    - extract_bq_op
